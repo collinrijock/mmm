@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence, PanInfo } from "motion/react";
 import { api } from "./api";
-import Admin from "./Admin";
 
 interface Meme {
   id: string;
@@ -25,7 +24,7 @@ interface Stats {
 }
 
 export default function App() {
-  const [view, setView] = useState<"login" | "swipe" | "admin">("login");
+  const [view, setView] = useState<"password" | "pick" | "swipe">("password");
   const [password, setPassword] = useState("");
   const [users, setUsers] = useState<MemeUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
@@ -43,11 +42,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [newUsername, setNewUsername] = useState("");
 
-  // Check for saved session
   useEffect(() => {
     const savedUserId = localStorage.getItem("mmm_user_id");
     const savedUsername = localStorage.getItem("mmm_username");
-    const savedPw = localStorage.getItem("mmm_admin_pw");
+    const savedPw = localStorage.getItem("mmm_pw");
     if (savedUserId && savedUsername && savedPw) {
       setUserId(savedUserId);
       setUsername(savedUsername);
@@ -56,7 +54,6 @@ export default function App() {
     }
   }, []);
 
-  // After password is validated, fetch the user list
   const fetchUsers = useCallback(async (pw: string) => {
     try {
       const res = await api(`/admin?pw=${encodeURIComponent(pw)}`);
@@ -74,33 +71,29 @@ export default function App() {
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    const userList = await fetchUsers(password);
-    if (userList.length === 0) {
-      // Password might be wrong, or no users yet — try auth to validate pw
-      try {
-        const res = await api("/auth", {
-          method: "POST",
-          body: JSON.stringify({ username: "__pw_check__", password }),
-        });
-        if (!res.ok) {
-          const d = await res.json();
-          setError(d.error || "Invalid password");
-          return;
-        }
-      } catch {
-        setError("Invalid password");
+    // Validate password by trying to auth with a dummy check
+    try {
+      const res = await api("/auth", {
+        method: "POST",
+        body: JSON.stringify({ username: "__check__", password }),
+      });
+      // 401 = bad password, anything else means password was accepted
+      if (res.status === 401) {
+        setError("Wrong password");
         return;
       }
+    } catch {
+      setError("Could not connect");
+      return;
     }
-    localStorage.setItem("mmm_admin_pw", password);
+    localStorage.setItem("mmm_pw", password);
+    const userList = await fetchUsers(password);
     setUsers(userList);
-    if (userList.length > 0) {
-      setSelectedUserId(userList[0].id);
-    }
+    if (userList.length > 0) setSelectedUserId(userList[0].id);
+    setView("pick");
   };
 
   const handleSelectAccount = () => {
-    if (!selectedUserId) return;
     const user = users.find((u) => u.id === selectedUserId);
     if (!user) return;
     setUserId(user.id);
@@ -138,12 +131,12 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem("mmm_user_id");
     localStorage.removeItem("mmm_username");
-    localStorage.removeItem("mmm_admin_pw");
+    localStorage.removeItem("mmm_pw");
     setUserId(null);
     setUsername("");
     setPassword("");
     setUsers([]);
-    setView("login");
+    setView("password");
   };
 
   // --- Swipe logic ---
@@ -241,67 +234,59 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyPress);
   }, [view, currentMeme, handleSwipe]);
 
-  // --- Admin view ---
+  // --- Password screen ---
 
-  if (view === "admin") {
-    return <Admin onBack={() => setView("swipe")} />;
-  }
-
-  // --- Login view ---
-
-  if (view === "login") {
-    const hasPassword = users.length > 0 || localStorage.getItem("mmm_admin_pw");
-
-    // Step 1: enter password
-    if (!hasPassword) {
-      return (
-        <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
-            <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-              MMM
-            </h1>
-            <p className="text-center text-gray-600 mb-8">
-              Meme Ranking Battle
-            </p>
-            <form onSubmit={handlePasswordSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Password
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-                  placeholder="Shared password"
-                  required
-                />
-              </div>
-              {error && (
-                <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm">
-                  {error}
-                </div>
-              )}
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
-              >
-                Enter
-              </button>
-            </form>
-          </div>
-        </div>
-      );
-    }
-
-    // Step 2: pick account from dropdown
+  if (view === "password") {
     return (
       <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
           <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
             MMM
           </h1>
-          <p className="text-center text-gray-600 mb-8">Pick your account</p>
+          <p className="text-center text-gray-600 mb-8">
+            Meme Ranking Battle
+          </p>
+          <form onSubmit={handlePasswordSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Password
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                placeholder="Shared password"
+                required
+              />
+            </div>
+            {error && (
+              <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm">
+                {error}
+              </div>
+            )}
+            <button
+              type="submit"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+            >
+              Enter
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Account picker screen ---
+
+  if (view === "pick") {
+    return (
+      <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
+          <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+            MMM
+          </h1>
+          <p className="text-center text-gray-600 mb-8">Who are you?</p>
 
           {users.length > 0 && (
             <div className="space-y-4 mb-6">
@@ -320,7 +305,8 @@ export default function App() {
                 onClick={handleSelectAccount}
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
               >
-                Continue as {users.find((u) => u.id === selectedUserId)?.username}
+                Continue as{" "}
+                {users.find((u) => u.id === selectedUserId)?.username}
               </button>
             </div>
           )}
@@ -427,12 +413,6 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setView("admin")}
-              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 text-sm backdrop-blur-sm transition-colors cursor-pointer"
-            >
-              Admin
-            </button>
-            <button
               onClick={() => {
                 fetchLeaderboard();
                 setShowLeaderboard(true);
@@ -445,7 +425,7 @@ export default function App() {
               onClick={handleLogout}
               className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/60 text-sm backdrop-blur-sm transition-colors cursor-pointer"
             >
-              Logout
+              Switch
             </button>
           </div>
         </div>
