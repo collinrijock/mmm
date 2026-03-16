@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useWebHaptics } from "web-haptics/react";
 import { api } from "./api";
 
 interface Meme {
@@ -28,6 +27,16 @@ interface Stats {
   topMeme: { text: string; rating: number } | null;
 }
 
+function haptic(type: "pick" | "both") {
+  try {
+    if (navigator.vibrate) {
+      navigator.vibrate(type === "pick" ? 30 : [40, 20, 40]);
+    }
+  } catch {
+    // not supported
+  }
+}
+
 export default function App() {
   const [view, setView] = useState<"pick" | "password" | "battle">("pick");
   const [password, setPassword] = useState("");
@@ -36,14 +45,18 @@ export default function App() {
   const [selectedUsername, setSelectedUsername] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
+
+  // Two-slot buffer: current pair + prefetched next pair
   const [pair, setPair] = useState<MemePair | null>(null);
+  const [nextPair, setNextPair] = useState<MemePair | null>(null);
+  const prefetching = useRef(false);
+
   const [stats, setStats] = useState<Stats | null>(null);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
   const [leaderboard, setLeaderboard] = useState<Meme[]>([]);
   const [picking, setPicking] = useState<"a" | "b" | "both" | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState("");
-  const { trigger } = useWebHaptics();
 
   // Restore saved session
   useEffect(() => {
@@ -73,9 +86,7 @@ export default function App() {
         setSelectedUserId(list[0].id);
         setSelectedUsername(list[0].username);
       }
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
   };
 
   const loginWithPassword = async (uname: string, pw: string) => {
@@ -126,35 +137,39 @@ export default function App() {
     localStorage.removeItem("mmm_username");
     setUserId(null);
     setUsername("");
+    setPair(null);
+    setNextPair(null);
     fetchUsers();
     setView("pick");
   };
 
-  // --- Battle logic ---
+  // --- Pair fetching with prefetch buffer ---
 
-  const fetchPair = useCallback(async () => {
-    if (!userId) return;
-    setLoading(true);
+  const fetchOnePair = useCallback(async (uid: string): Promise<MemePair | null> => {
     try {
-      const res = await api(`/memes/battle?userId=${userId}`);
-      if (res.status === 404) { setPair(null); return; }
-      if (!res.ok) throw new Error("Failed to fetch pair");
-      setPair(await res.json());
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
+      const res = await api(`/memes/battle?userId=${uid}`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
     }
-  }, [userId]);
+  }, []);
 
-  const fetchStats = useCallback(async () => {
-    if (!userId) return;
+  const prefetchNext = useCallback(async (uid: string) => {
+    if (prefetching.current) return;
+    prefetching.current = true;
+    const p = await fetchOnePair(uid);
+    setNextPair(p);
+    prefetching.current = false;
+  }, [fetchOnePair]);
+
+  const fetchStats = useCallback(async (uid: string) => {
     try {
-      const res = await api(`/stats?userId=${userId}`);
+      const res = await api(`/stats?userId=${uid}`);
       if (!res.ok) return;
       setStats(await res.json());
     } catch { /* ignore */ }
-  }, [userId]);
+  }, []);
 
   const fetchLeaderboard = async () => {
     try {
@@ -164,42 +179,51 @@ export default function App() {
     } catch { /* ignore */ }
   };
 
-  const handleVote = useCallback(
-    async (pick: "a" | "b" | "both") => {
-      if (!pair || !userId || picking) return;
-      setPicking(pick);
-      trigger(pick === "both" ? "nudge" : "success");
-
-      // Small delay so the highlight animation is visible
-      setTimeout(async () => {
-        try {
-          await api("/memes/vote", {
-            method: "POST",
-            body: JSON.stringify({
-              userId,
-              memeAId: pair.memeA.id,
-              memeBId: pair.memeB.id,
-              pick: pick === "both" ? "both_suck" : pick,
-            }),
-          });
-          await fetchPair();
-          await fetchStats();
-        } catch (err) {
-          console.error("Vote failed:", err);
-        } finally {
-          setPicking(null);
-        }
-      }, 300);
-    },
-    [pair, userId, picking, fetchPair, fetchStats, trigger]
-  );
-
+  // Initial load: fetch first pair + prefetch second in parallel
   useEffect(() => {
     if (view === "battle" && userId) {
-      fetchPair();
-      fetchStats();
+      setInitialLoading(true);
+      Promise.all([fetchOnePair(userId), fetchOnePair(userId), fetchStats(userId)]).then(
+        ([first, second]) => {
+          setPair(first);
+          setNextPair(second);
+          setInitialLoading(false);
+        }
+      );
     }
-  }, [view, userId, fetchPair, fetchStats]);
+  }, [view, userId, fetchOnePair, fetchStats]);
+
+  const handleVote = useCallback(
+    (pick: "a" | "b" | "both") => {
+      if (!pair || !userId || picking) return;
+
+      haptic(pick === "both" ? "both" : "pick");
+      setPicking(pick);
+
+      // Swap to prefetched next pair instantly after a brief flash
+      setTimeout(() => {
+        setPair(nextPair);
+        setNextPair(null);
+        setPicking(null);
+        // Kick off prefetch for the one after
+        prefetchNext(userId);
+      }, 150);
+
+      // Fire vote + stats in background — don't block UI
+      api("/memes/vote", {
+        method: "POST",
+        body: JSON.stringify({
+          userId,
+          memeAId: pair.memeA.id,
+          memeBId: pair.memeB.id,
+          pick: pick === "both" ? "both_suck" : pick,
+        }),
+      })
+        .then(() => fetchStats(userId))
+        .catch(console.error);
+    },
+    [pair, nextPair, userId, picking, prefetchNext, fetchStats]
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -343,9 +367,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             {stats && (
-              <span className="text-white/70 text-xs">
-                {stats.userBattles} battles
-              </span>
+              <span className="text-white/70 text-xs">{stats.userBattles} battles</span>
             )}
             <button
               onClick={() => { fetchLeaderboard(); setShowLeaderboard(true); }}
@@ -363,15 +385,15 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main arena */}
+      {/* Arena */}
       <div className="flex-1 flex flex-col items-center justify-center p-4 gap-4">
         <div className="w-full max-w-2xl">
-          <p className="text-center text-white/80 text-sm font-medium mb-4 tracking-wide uppercase">
+          <p className="text-center text-white/80 text-sm font-medium mb-3 tracking-wide uppercase">
             Which is funnier?
           </p>
 
-          <AnimatePresence mode="wait">
-            {loading && (
+          <AnimatePresence mode="popLayout">
+            {initialLoading && (
               <motion.div
                 key="loading"
                 initial={{ opacity: 0 }}
@@ -383,7 +405,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {!loading && !pair && (
+            {!initialLoading && !pair && (
               <motion.div
                 key="done"
                 initial={{ opacity: 0, scale: 0.9 }}
@@ -401,16 +423,15 @@ export default function App() {
               </motion.div>
             )}
 
-            {!loading && pair && (
+            {!initialLoading && pair && (
               <motion.div
                 key={pair.memeA.id + pair.memeB.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                transition={{ duration: 0.1 }}
                 className="grid grid-cols-2 gap-3"
               >
-                {/* Meme A */}
                 <MemeCard
                   meme={pair.memeA}
                   highlighted={picking === "a"}
@@ -418,7 +439,6 @@ export default function App() {
                   onClick={() => handleVote("a")}
                   side="left"
                 />
-                {/* Meme B */}
                 <MemeCard
                   meme={pair.memeB}
                   highlighted={picking === "b"}
@@ -430,12 +450,11 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          {/* Both Suck button */}
-          {!loading && pair && (
+          {!initialLoading && pair && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="mt-4 flex justify-center"
+              className="mt-3 flex justify-center"
             >
               <button
                 onClick={() => handleVote("both")}
@@ -443,7 +462,7 @@ export default function App() {
                 className={`px-6 py-2.5 rounded-full text-sm font-medium transition-all cursor-pointer
                   ${picking === "both"
                     ? "bg-gray-700 text-white scale-95"
-                    : "bg-white/20 hover:bg-white/30 text-white backdrop-blur-sm"
+                    : "bg-white/20 hover:bg-white/30 active:scale-95 text-white backdrop-blur-sm"
                   }`}
               >
                 💀 Both Suck
@@ -451,8 +470,8 @@ export default function App() {
             </motion.div>
           )}
 
-          {!loading && pair && (
-            <p className="text-center text-white/40 text-xs mt-3">
+          {!initialLoading && pair && (
+            <p className="text-center text-white/30 text-xs mt-3">
               ← → arrow keys · space = both suck
             </p>
           )}
@@ -479,17 +498,16 @@ function MemeCard({
     <motion.button
       onClick={onClick}
       animate={{
-        scale: highlighted ? 1.03 : dimmed ? 0.97 : 1,
-        opacity: dimmed ? 0.4 : 1,
+        scale: highlighted ? 1.04 : dimmed ? 0.96 : 1,
+        opacity: dimmed ? 0.35 : 1,
       }}
-      transition={{ type: "spring", stiffness: 400, damping: 25 }}
-      className={`relative w-full rounded-2xl shadow-xl p-4 flex flex-col items-start text-left cursor-pointer transition-colors
+      transition={{ type: "spring", stiffness: 600, damping: 30 }}
+      className={`relative w-full rounded-2xl shadow-xl p-4 flex flex-col items-start text-left cursor-pointer select-none
         ${highlighted
-          ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white ring-4 ring-white/50"
+          ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white ring-4 ring-white/60"
           : "bg-white text-gray-800 hover:bg-gray-50 active:scale-95"
         }`}
     >
-      {/* ELO badge */}
       <span
         className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full mb-3 ${
           highlighted ? "bg-white/20 text-white" : "bg-gray-100 text-gray-400"
@@ -502,9 +520,8 @@ function MemeCard({
         {meme.text}
       </p>
 
-      {/* Pick arrow hint */}
       <div
-        className={`absolute bottom-3 ${side === "left" ? "left-3" : "right-3"} text-lg opacity-20`}
+        className={`absolute bottom-3 ${side === "left" ? "left-3" : "right-3"} text-base opacity-15`}
       >
         {side === "left" ? "←" : "→"}
       </div>
