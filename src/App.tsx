@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence, PanInfo } from "motion/react";
 import { api } from "./api";
+import Admin from "./Admin";
 
 interface Meme {
   id: string;
@@ -8,6 +9,11 @@ interface Meme {
   eloRating: number;
   timesShown: number;
   timesLiked: number;
+}
+
+interface MemeUser {
+  id: string;
+  username: string;
 }
 
 interface Stats {
@@ -19,10 +25,12 @@ interface Stats {
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [username, setUsername] = useState("");
+  const [view, setView] = useState<"login" | "swipe" | "admin">("login");
   const [password, setPassword] = useState("");
+  const [users, setUsers] = useState<MemeUser[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
+  const [username, setUsername] = useState("");
   const [currentMeme, setCurrentMeme] = useState<Meme | null>(null);
   const [previousMemeId, setPreviousMemeId] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -33,6 +41,112 @@ export default function App() {
   >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [newUsername, setNewUsername] = useState("");
+
+  // Check for saved session
+  useEffect(() => {
+    const savedUserId = localStorage.getItem("mmm_user_id");
+    const savedUsername = localStorage.getItem("mmm_username");
+    const savedPw = localStorage.getItem("mmm_admin_pw");
+    if (savedUserId && savedUsername && savedPw) {
+      setUserId(savedUserId);
+      setUsername(savedUsername);
+      setPassword(savedPw);
+      setView("swipe");
+    }
+  }, []);
+
+  // After password is validated, fetch the user list
+  const fetchUsers = useCallback(async (pw: string) => {
+    try {
+      const res = await api(`/admin?pw=${encodeURIComponent(pw)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return (data.users || []).map((u: { id: string; username: string }) => ({
+        id: u.id,
+        username: u.username,
+      }));
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    const userList = await fetchUsers(password);
+    if (userList.length === 0) {
+      // Password might be wrong, or no users yet — try auth to validate pw
+      try {
+        const res = await api("/auth", {
+          method: "POST",
+          body: JSON.stringify({ username: "__pw_check__", password }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          setError(d.error || "Invalid password");
+          return;
+        }
+      } catch {
+        setError("Invalid password");
+        return;
+      }
+    }
+    localStorage.setItem("mmm_admin_pw", password);
+    setUsers(userList);
+    if (userList.length > 0) {
+      setSelectedUserId(userList[0].id);
+    }
+  };
+
+  const handleSelectAccount = () => {
+    if (!selectedUserId) return;
+    const user = users.find((u) => u.id === selectedUserId);
+    if (!user) return;
+    setUserId(user.id);
+    setUsername(user.username);
+    localStorage.setItem("mmm_user_id", user.id);
+    localStorage.setItem("mmm_username", user.username);
+    setView("swipe");
+  };
+
+  const handleCreateAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername.trim()) return;
+    setError("");
+    try {
+      const res = await api("/auth", {
+        method: "POST",
+        body: JSON.stringify({ username: newUsername.trim(), password }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || "Failed to create account");
+      }
+      const data = await res.json();
+      setUserId(data.user.id);
+      setUsername(data.user.username);
+      localStorage.setItem("mmm_user_id", data.user.id);
+      localStorage.setItem("mmm_username", data.user.username);
+      setNewUsername("");
+      setView("swipe");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create");
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("mmm_user_id");
+    localStorage.removeItem("mmm_username");
+    localStorage.removeItem("mmm_admin_pw");
+    setUserId(null);
+    setUsername("");
+    setPassword("");
+    setUsers([]);
+    setView("login");
+  };
+
+  // --- Swipe logic ---
 
   const fetchNextMeme = useCallback(async () => {
     if (!userId) return;
@@ -78,7 +192,6 @@ export default function App() {
     async (direction: "left" | "right") => {
       if (!currentMeme || !userId) return;
       setSwipeDirection(direction);
-
       setTimeout(async () => {
         try {
           await api("/memes/swipe", {
@@ -111,110 +224,145 @@ export default function App() {
     else if (info.offset.x < -threshold) handleSwipe("left");
   };
 
-  const handleAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    try {
-      const res = await api("/auth", {
-        method: "POST",
-        body: JSON.stringify({ username, password }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Authentication failed");
-      }
-      const data = await res.json();
-      setUserId(data.user.id);
-      setIsAuthenticated(true);
-      localStorage.setItem("mmm_user_id", data.user.id);
-      localStorage.setItem("mmm_username", data.user.username);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Authentication failed");
-    }
-  };
-
   useEffect(() => {
-    const savedUserId = localStorage.getItem("mmm_user_id");
-    const savedUsername = localStorage.getItem("mmm_username");
-    if (savedUserId && savedUsername) {
-      setUserId(savedUserId);
-      setUsername(savedUsername);
-      setIsAuthenticated(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isAuthenticated && userId) {
+    if (view === "swipe" && userId) {
       fetchNextMeme();
       fetchStats();
     }
-  }, [isAuthenticated, userId, fetchNextMeme, fetchStats]);
+  }, [view, userId, fetchNextMeme, fetchStats]);
 
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
-      if (!currentMeme) return;
+      if (view !== "swipe" || !currentMeme) return;
       if (e.key === "ArrowLeft") handleSwipe("left");
       else if (e.key === "ArrowRight") handleSwipe("right");
     };
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
-  }, [currentMeme, handleSwipe]);
+  }, [view, currentMeme, handleSwipe]);
 
-  if (!isAuthenticated) {
+  // --- Admin view ---
+
+  if (view === "admin") {
+    return <Admin onBack={() => setView("swipe")} />;
+  }
+
+  // --- Login view ---
+
+  if (view === "login") {
+    const hasPassword = users.length > 0 || localStorage.getItem("mmm_admin_pw");
+
+    // Step 1: enter password
+    if (!hasPassword) {
+      return (
+        <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
+            <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+              MMM
+            </h1>
+            <p className="text-center text-gray-600 mb-8">
+              Meme Ranking Battle
+            </p>
+            <form onSubmit={handlePasswordSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                  placeholder="Shared password"
+                  required
+                />
+              </div>
+              {error && (
+                <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm">
+                  {error}
+                </div>
+              )}
+              <button
+                type="submit"
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+              >
+                Enter
+              </button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    // Step 2: pick account from dropdown
     return (
       <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
         <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
           <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
             MMM
           </h1>
-          <p className="text-center text-gray-600 mb-8">Meme Ranking Battle</p>
+          <p className="text-center text-gray-600 mb-8">Pick your account</p>
 
-          <form onSubmit={handleAuth} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Username
-              </label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-                placeholder="Enter your username"
-                required
-              />
+          {users.length > 0 && (
+            <div className="space-y-4 mb-6">
+              <select
+                value={selectedUserId}
+                onChange={(e) => setSelectedUserId(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white text-gray-800 cursor-pointer"
+              >
+                {users.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.username}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleSelectAccount}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+              >
+                Continue as {users.find((u) => u.id === selectedUserId)?.username}
+              </button>
             </div>
+          )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-                placeholder="Shared password"
-                required
-              />
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200" />
             </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="bg-white px-3 text-gray-500">
+                or create new
+              </span>
+            </div>
+          </div>
 
+          <form onSubmit={handleCreateAccount} className="space-y-4">
+            <input
+              type="text"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+              placeholder="New username"
+              required
+            />
             {error && (
               <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm">
                 {error}
               </div>
             )}
-
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
+              className="w-full py-3 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-colors cursor-pointer"
             >
-              Enter
+              Create account
             </button>
           </form>
         </div>
       </div>
     );
   }
+
+  // --- Leaderboard view ---
 
   if (showLeaderboard) {
     return (
@@ -267,6 +415,8 @@ export default function App() {
     );
   }
 
+  // --- Swipe view ---
+
   return (
     <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex flex-col">
       <div className="p-4">
@@ -275,15 +425,29 @@ export default function App() {
             <h1 className="text-2xl font-bold">MMM</h1>
             <p className="text-sm opacity-80">@{username}</p>
           </div>
-          <button
-            onClick={() => {
-              fetchLeaderboard();
-              setShowLeaderboard(true);
-            }}
-            className="px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white backdrop-blur-sm transition-colors cursor-pointer"
-          >
-            Leaderboard
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setView("admin")}
+              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 text-sm backdrop-blur-sm transition-colors cursor-pointer"
+            >
+              Admin
+            </button>
+            <button
+              onClick={() => {
+                fetchLeaderboard();
+                setShowLeaderboard(true);
+              }}
+              className="px-3 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white backdrop-blur-sm transition-colors cursor-pointer"
+            >
+              Leaderboard
+            </button>
+            <button
+              onClick={handleLogout}
+              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/60 text-sm backdrop-blur-sm transition-colors cursor-pointer"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </div>
 
