@@ -24,10 +24,11 @@ interface Stats {
 }
 
 export default function App() {
-  const [view, setView] = useState<"password" | "pick" | "swipe">("password");
+  const [view, setView] = useState<"pick" | "password" | "swipe">("pick");
   const [password, setPassword] = useState("");
   const [users, setUsers] = useState<MemeUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedUsername, setSelectedUsername] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [currentMeme, setCurrentMeme] = useState<Meme | null>(null);
@@ -41,102 +42,95 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [newUsername, setNewUsername] = useState("");
+  const [isNewAccount, setIsNewAccount] = useState(false);
 
+  // Restore saved session
   useEffect(() => {
     const savedUserId = localStorage.getItem("mmm_user_id");
     const savedUsername = localStorage.getItem("mmm_username");
-    const savedPw = localStorage.getItem("mmm_pw");
-    if (savedUserId && savedUsername && savedPw) {
+    if (savedUserId && savedUsername) {
       setUserId(savedUserId);
       setUsername(savedUsername);
-      setPassword(savedPw);
       setView("swipe");
+      return;
     }
+    // No session — fetch the user list for the picker
+    fetchUsers();
   }, []);
 
-  const fetchUsers = useCallback(async (pw: string) => {
+  const fetchUsers = async () => {
     try {
-      const res = await api(`/admin?pw=${encodeURIComponent(pw)}`);
-      if (!res.ok) return [];
+      const res = await api("/auth");
+      if (!res.ok) return;
       const data = await res.json();
-      return (data.users || []).map((u: { id: string; username: string }) => ({
-        id: u.id,
-        username: u.username,
-      }));
+      const list: MemeUser[] = (data.users || []).map(
+        (u: { id: string; username: string }) => ({
+          id: u.id,
+          username: u.username,
+        })
+      );
+      setUsers(list);
+      if (list.length > 0) {
+        setSelectedUserId(list[0].id);
+        setSelectedUsername(list[0].username);
+      }
     } catch {
-      return [];
+      // ignore
     }
-  }, []);
+  };
+
+  const handlePickUser = () => {
+    if (!selectedUserId) return;
+    setView("password");
+  };
+
+  const handlePickNewUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername.trim()) return;
+    setSelectedUsername(newUsername.trim());
+    setSelectedUserId("");
+    setIsNewAccount(true);
+    setView("password");
+  };
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    // Validate password by trying to auth with a dummy check
+    const uname = isNewAccount ? newUsername.trim() : selectedUsername;
     try {
       const res = await api("/auth", {
         method: "POST",
-        body: JSON.stringify({ username: "__check__", password }),
+        body: JSON.stringify({ username: uname, password }),
       });
-      // 401 = bad password, anything else means password was accepted
       if (res.status === 401) {
         setError("Wrong password");
         return;
       }
-    } catch {
-      setError("Could not connect");
-      return;
-    }
-    localStorage.setItem("mmm_pw", password);
-    const userList = await fetchUsers(password);
-    setUsers(userList);
-    if (userList.length > 0) setSelectedUserId(userList[0].id);
-    setView("pick");
-  };
-
-  const handleSelectAccount = () => {
-    const user = users.find((u) => u.id === selectedUserId);
-    if (!user) return;
-    setUserId(user.id);
-    setUsername(user.username);
-    localStorage.setItem("mmm_user_id", user.id);
-    localStorage.setItem("mmm_username", user.username);
-    setView("swipe");
-  };
-
-  const handleCreateAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUsername.trim()) return;
-    setError("");
-    try {
-      const res = await api("/auth", {
-        method: "POST",
-        body: JSON.stringify({ username: newUsername.trim(), password }),
-      });
       if (!res.ok) {
         const d = await res.json();
-        throw new Error(d.error || "Failed to create account");
+        throw new Error(d.error || "Login failed");
       }
       const data = await res.json();
       setUserId(data.user.id);
       setUsername(data.user.username);
       localStorage.setItem("mmm_user_id", data.user.id);
       localStorage.setItem("mmm_username", data.user.username);
-      setNewUsername("");
       setView("swipe");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create");
+      setError(err instanceof Error ? err.message : "Login failed");
     }
   };
 
   const handleLogout = () => {
     localStorage.removeItem("mmm_user_id");
     localStorage.removeItem("mmm_username");
-    localStorage.removeItem("mmm_pw");
     setUserId(null);
     setUsername("");
     setPassword("");
-    setUsers([]);
-    setView("password");
+    setIsNewAccount(false);
+    setNewUsername("");
+    fetchUsers();
+    setView("pick");
   };
 
   // --- Swipe logic ---
@@ -234,50 +228,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyPress);
   }, [view, currentMeme, handleSwipe]);
 
-  // --- Password screen ---
-
-  if (view === "password") {
-    return (
-      <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
-          <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-            MMM
-          </h1>
-          <p className="text-center text-gray-600 mb-8">
-            Meme Ranking Battle
-          </p>
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-                placeholder="Shared password"
-                required
-              />
-            </div>
-            {error && (
-              <div className="p-3 rounded-xl bg-red-50 text-red-600 text-sm">
-                {error}
-              </div>
-            )}
-            <button
-              type="submit"
-              className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
-            >
-              Enter
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  // --- Account picker screen ---
+  // --- Account picker screen (step 1) ---
 
   if (view === "pick") {
     return (
@@ -292,7 +243,11 @@ export default function App() {
             <div className="space-y-4 mb-6">
               <select
                 value={selectedUserId}
-                onChange={(e) => setSelectedUserId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedUserId(e.target.value);
+                  const u = users.find((u) => u.id === e.target.value);
+                  if (u) setSelectedUsername(u.username);
+                }}
                 className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none bg-white text-gray-800 cursor-pointer"
               >
                 {users.map((u) => (
@@ -302,7 +257,7 @@ export default function App() {
                 ))}
               </select>
               <button
-                onClick={handleSelectAccount}
+                onClick={handlePickUser}
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
               >
                 Continue as{" "}
@@ -322,13 +277,49 @@ export default function App() {
             </div>
           </div>
 
-          <form onSubmit={handleCreateAccount} className="space-y-4">
+          <form onSubmit={handlePickNewUser} className="space-y-4">
             <input
               type="text"
               value={newUsername}
               onChange={(e) => setNewUsername(e.target.value)}
               className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
               placeholder="New username"
+              required
+            />
+            <button
+              type="submit"
+              className="w-full py-3 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-colors cursor-pointer"
+            >
+              Create account
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Password screen (step 2) ---
+
+  if (view === "password") {
+    return (
+      <div className="min-h-dvh bg-gradient-to-br from-purple-500 via-pink-500 to-orange-500 flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-md">
+          <h1 className="text-4xl font-bold text-center mb-2 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+            MMM
+          </h1>
+          <p className="text-center text-gray-600 mb-1">
+            Hey {selectedUsername}
+          </p>
+          <p className="text-center text-gray-400 text-sm mb-8">
+            Enter the password to continue
+          </p>
+          <form onSubmit={handlePasswordSubmit} className="space-y-4">
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+              placeholder="Shared password"
               required
             />
             {error && (
@@ -338,9 +329,21 @@ export default function App() {
             )}
             <button
               type="submit"
-              className="w-full py-3 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-colors cursor-pointer"
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold hover:opacity-90 transition-opacity cursor-pointer"
             >
-              Create account
+              Enter
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setView("pick");
+                setError("");
+                setPassword("");
+                setIsNewAccount(false);
+              }}
+              className="w-full py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors cursor-pointer"
+            >
+              Not you? Go back
             </button>
           </form>
         </div>
