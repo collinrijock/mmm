@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence, PanInfo } from "motion/react";
+import { useWebHaptics } from "web-haptics/react";
 import { api } from "./api";
 
 interface Meme {
@@ -43,18 +44,20 @@ export default function App() {
   const [error, setError] = useState("");
   const [newUsername, setNewUsername] = useState("");
   const [isNewAccount, setIsNewAccount] = useState(false);
+  const { trigger } = useWebHaptics();
 
   // Restore saved session
   useEffect(() => {
     const savedUserId = localStorage.getItem("mmm_user_id");
     const savedUsername = localStorage.getItem("mmm_username");
+    const savedPw = localStorage.getItem("mmm_pw");
+    if (savedPw) setPassword(savedPw);
     if (savedUserId && savedUsername) {
       setUserId(savedUserId);
       setUsername(savedUsername);
       setView("swipe");
       return;
     }
-    // No session — fetch the user list for the picker
     fetchUsers();
   }, []);
 
@@ -79,32 +82,16 @@ export default function App() {
     }
   };
 
-  const handlePickUser = () => {
-    if (!selectedUserId) return;
-    setView("password");
-  };
-
-  const handlePickNewUser = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUsername.trim()) return;
-    setSelectedUsername(newUsername.trim());
-    setSelectedUserId("");
-    setIsNewAccount(true);
-    setView("password");
-  };
-
-  const handlePasswordSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const loginWithPassword = async (uname: string, pw: string) => {
     setError("");
-    const uname = isNewAccount ? newUsername.trim() : selectedUsername;
     try {
       const res = await api("/auth", {
         method: "POST",
-        body: JSON.stringify({ username: uname, password }),
+        body: JSON.stringify({ username: uname, password: pw }),
       });
       if (res.status === 401) {
         setError("Wrong password");
-        return;
+        return false;
       }
       if (!res.ok) {
         const d = await res.json();
@@ -115,18 +102,57 @@ export default function App() {
       setUsername(data.user.username);
       localStorage.setItem("mmm_user_id", data.user.id);
       localStorage.setItem("mmm_username", data.user.username);
+      localStorage.setItem("mmm_pw", pw);
       setView("swipe");
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
+      return false;
     }
+  };
+
+  const handlePickUser = async () => {
+    if (!selectedUserId) return;
+    // If password is cached, skip the password screen
+    const cachedPw = password || localStorage.getItem("mmm_pw");
+    if (cachedPw) {
+      const ok = await loginWithPassword(selectedUsername, cachedPw);
+      if (ok) return;
+      // Cached password was wrong (changed?), fall through to password screen
+      localStorage.removeItem("mmm_pw");
+      setPassword("");
+    }
+    setView("password");
+  };
+
+  const handlePickNewUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername.trim()) return;
+    setSelectedUsername(newUsername.trim());
+    setSelectedUserId("");
+    setIsNewAccount(true);
+    const cachedPw = password || localStorage.getItem("mmm_pw");
+    if (cachedPw) {
+      const ok = await loginWithPassword(newUsername.trim(), cachedPw);
+      if (ok) return;
+      localStorage.removeItem("mmm_pw");
+      setPassword("");
+    }
+    setView("password");
+  };
+
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const uname = isNewAccount ? newUsername.trim() : selectedUsername;
+    await loginWithPassword(uname, password);
   };
 
   const handleLogout = () => {
     localStorage.removeItem("mmm_user_id");
     localStorage.removeItem("mmm_username");
+    // Keep password cached so switching accounts doesn't require re-entry
     setUserId(null);
     setUsername("");
-    setPassword("");
     setIsNewAccount(false);
     setNewUsername("");
     fetchUsers();
@@ -179,6 +205,7 @@ export default function App() {
     async (direction: "left" | "right") => {
       if (!currentMeme || !userId) return;
       setSwipeDirection(direction);
+      trigger(direction === "right" ? "success" : "nudge");
       setTimeout(async () => {
         try {
           await api("/memes/swipe", {
