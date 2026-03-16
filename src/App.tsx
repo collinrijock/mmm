@@ -502,23 +502,23 @@ function MemeCard({
         opacity: dimmed ? 0.35 : 1,
       }}
       transition={{ type: "spring", stiffness: 600, damping: 30 }}
-      className={`relative w-full rounded-2xl shadow-xl p-4 flex flex-col items-start text-left cursor-pointer select-none
+      className={`relative w-full rounded-2xl shadow-xl p-5 flex flex-col items-start text-left cursor-pointer select-none min-h-40
         ${highlighted
           ? "bg-gradient-to-br from-purple-500 to-pink-500 text-white ring-4 ring-white/60"
           : "bg-white text-gray-800 hover:bg-gray-50 active:scale-95"
         }`}
     >
+      <p className={`text-base leading-relaxed font-medium mb-4 ${highlighted ? "text-white" : "text-gray-800"}`}>
+        {meme.text}
+      </p>
+
       <span
-        className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full mb-3 ${
+        className={`text-xs font-mono font-bold px-2 py-0.5 rounded-full mt-auto ${
           highlighted ? "bg-white/20 text-white" : "bg-gray-100 text-gray-400"
         }`}
       >
         {Math.round(meme.eloRating)} ELO
       </span>
-
-      <p className={`text-sm leading-snug ${highlighted ? "text-white" : "text-gray-800"}`}>
-        {meme.text}
-      </p>
 
       <div
         className={`absolute bottom-3 ${side === "left" ? "left-3" : "right-3"} text-base opacity-15`}
