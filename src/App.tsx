@@ -42,8 +42,6 @@ export default function App() {
   >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [newUsername, setNewUsername] = useState("");
-  const [isNewAccount, setIsNewAccount] = useState(false);
   const { trigger } = useWebHaptics();
 
   // Restore saved session
@@ -125,36 +123,17 @@ export default function App() {
     setView("password");
   };
 
-  const handlePickNewUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUsername.trim()) return;
-    setSelectedUsername(newUsername.trim());
-    setSelectedUserId("");
-    setIsNewAccount(true);
-    const cachedPw = password || localStorage.getItem("mmm_pw");
-    if (cachedPw) {
-      const ok = await loginWithPassword(newUsername.trim(), cachedPw);
-      if (ok) return;
-      localStorage.removeItem("mmm_pw");
-      setPassword("");
-    }
-    setView("password");
-  };
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const uname = isNewAccount ? newUsername.trim() : selectedUsername;
-    await loginWithPassword(uname, password);
+    await loginWithPassword(selectedUsername, password);
   };
 
   const handleLogout = () => {
     localStorage.removeItem("mmm_user_id");
     localStorage.removeItem("mmm_username");
-    // Keep password cached so switching accounts doesn't require re-entry
     setUserId(null);
     setUsername("");
-    setIsNewAccount(false);
-    setNewUsername("");
     fetchUsers();
     setView("pick");
   };
@@ -293,33 +272,6 @@ export default function App() {
             </div>
           )}
 
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200" />
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="bg-white px-3 text-gray-500">
-                or create new
-              </span>
-            </div>
-          </div>
-
-          <form onSubmit={handlePickNewUser} className="space-y-4">
-            <input
-              type="text"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
-              placeholder="New username"
-              required
-            />
-            <button
-              type="submit"
-              className="w-full py-3 rounded-xl bg-gray-100 text-gray-700 font-semibold hover:bg-gray-200 transition-colors cursor-pointer"
-            >
-              Create account
-            </button>
-          </form>
         </div>
       </div>
     );
@@ -366,7 +318,6 @@ export default function App() {
                 setView("pick");
                 setError("");
                 setPassword("");
-                setIsNewAccount(false);
               }}
               className="w-full py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors cursor-pointer"
             >
